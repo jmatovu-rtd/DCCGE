@@ -1,0 +1,382 @@
+# ENVISAGE v10.01 §3.9 National accounts and model closure.
+# Document-strict closure block: only ENVISAGE macro/closure variable families
+# are declared or fixed here.  Each numbered equation is labeled immediately
+# above its JuMP equation.
+
+function _env_hasvar(m::JuMP.Model, nm::Symbol)
+    return haskey(JuMP.object_dictionary(m), nm)
+end
+
+function _env_first(v::Vector{String}, default::String)
+    return isempty(v) ? default : first(v)
+end
+
+function _env_pick(v::Vector{String}, candidates::Vector{String}, default::String)
+    for c in candidates
+        c in v && return c
+    end
+    return _env_first(v, default)
+end
+
+function closure_block!(m::JuMP.Model, data::EnvData, cal::EnvCalibration)
+    PAR = parameters(data, cal)
+    # Local parameter aliases generated from ParameterTables.jl.
+    Rn = PAR[:Rn]
+    chi_k = PAR[:chi_k]
+    chi_sf = PAR[:chi_sf]
+    chi_welf = PAR[:chi_welf]
+    delta = PAR[:delta]
+    eps_ror = PAR[:eps_ror]
+    grKMax = PAR[:grKMax]
+    grKMin = PAR[:grKMin]
+    grKTrend = PAR[:grKTrend]
+    rbar = PAR[:r]
+    s = data.sets
+    inv_fd = _env_pick(s.fd, vcat(s.inv, ["inv", "INV", "investment", "Investment"]), _env_first(s.fd, "inv"))
+    cap = _env_first(s.cap, "cap")
+    rres = _env_pick(s.r, s.rres, _env_first(s.r, "rres"))
+    aa0 = _env_pick(s.aa, s.a, _env_first(s.i, ""))
+
+    # Declare only ENVISAGE national-account and closure variable families.
+    if !_env_hasvar(m, :QGDP);    @variable(m, QGDP[s.r,s.t,s.t]); end
+    if !_env_hasvar(m, :GDPMP);   @variable(m, GDPMP[s.r] >= 0); end
+    if !_env_hasvar(m, :PGDPMP);  @variable(m, PGDPMP[s.r] >= 0); end
+    if !_env_hasvar(m, :RGDPMP);  @variable(m, RGDPMP[s.r] >= 0); end
+    if !_env_hasvar(m, :RGDPpc);  @variable(m, RGDPpc[s.r] >= 0); end
+    if !_env_hasvar(m, :gy);      @variable(m, gy[s.r]); end
+    if !_env_hasvar(m, :KLRat);   @variable(m, KLRat[s.r] >= 0); end
+    if !_env_hasvar(m, :RSg);     @variable(m, RSg[s.r]); end
+    if !_env_hasvar(m, :Rg);      @variable(m, Rg); end
+    if !_env_hasvar(m, :phi);     @variable(m, phi[s.r] >= 0); end
+    if !_env_hasvar(m, :TKe);     @variable(m, TKe[s.r] >= 0); end
+    if !_env_hasvar(m, :R);       @variable(m, R[s.r] >= 0); end
+    if !_env_hasvar(m, :Rc);      @variable(m, Rc[s.r]); end
+    if !_env_hasvar(m, :Re);      @variable(m, Re[s.r]); end
+    if !_env_hasvar(m, :DeltaRoR); @variable(m, DeltaRoR[s.r]); end
+    if !_env_hasvar(m, :grK);     @variable(m, grK[s.r]); end
+    if !_env_hasvar(m, :Rd);      @variable(m, Rd[s.r]); end
+    if !_env_hasvar(m, :PNUM);    @variable(m, PNUM >= 0); end
+    if !_env_hasvar(m, :EV);      @variable(m, EV[s.r]); end
+    if !_env_hasvar(m, :CV);      @variable(m, CV[s.r]); end
+    if !_env_hasvar(m, :EVG);     @variable(m, EVG); end
+    if !_env_hasvar(m, :CVG);     @variable(m, CVG); end
+    if !_env_hasvar(m, :SWF);     @variable(m, SWF); end
+
+    # Bind local aliases after guarded declarations.  This avoids UndefVarError
+    # when a variable family was already declared by another block.
+    QGDP = m[:QGDP]
+    GDPMP = m[:GDPMP]
+    PGDPMP = m[:PGDPMP]
+    RGDPMP = m[:RGDPMP]
+    RGDPpc = m[:RGDPpc]
+    gy = m[:gy]
+    KLRat = m[:KLRat]
+    RSg = m[:RSg]
+    Rg = m[:Rg]
+    phi = m[:phi]
+    TKe = m[:TKe]
+    R = m[:R]
+    Rc = m[:Rc]
+    Re = m[:Re]
+    DeltaRoR = m[:DeltaRoR]
+    grK = m[:grK]
+    Rd = m[:Rd]
+    PNUM = m[:PNUM]
+    EV = m[:EV]
+    CV = m[:CV]
+    EVG = m[:EVG]
+    CVG = m[:CVG]
+    SWF = m[:SWF]
+
+    XA = m[:XA]
+    XTT = m[:XTT]
+    XWs = m[:XWs]
+    XWd = m[:XWd]
+    PWE = m[:PWE]
+    PWM = m[:PWM]
+    PD = m[:PD]
+    PA = m[:PA]
+    PAh = _env_hasvar(m, :PAh) ? m[:PAh] : nothing
+    YGOV = m[:YGOV]
+    YFD = m[:YFD]
+    PFD = m[:PFD]
+    XFD = m[:XFD]
+    Sh = m[:Sh]
+    Sg = m[:Sg]
+    Sf = m[:Sf]
+    PWsav = m[:PWsav]
+    TKs = m[:TKs]
+    PK = m[:PK]
+    Kv = m[:Kv]
+    XFD_inv = m[:XFD]
+
+    # Prices for final demand in QGDP.  Avoid user-defined lookup functions inside
+    # JuMP nonlinear macros because region labels such as R1 can otherwise be
+    # interpreted as unexpected nonlinear objects.  Build explicit household and
+    # non-household final-demand sets instead.
+    fd_h = [fd for fd in s.fd if fd in s.h]
+    fd_nh = [fd for fd in s.fd if !(fd in s.h)]
+
+    Pop0 = get(data.par, "Pop", Dict(rr => 1.0 for rr in s.r))
+    Pop = Dict(rr => Float64(get(Pop0, rr, 1.0)) for rr in s.r)
+    RGDPpcLag0 = get(data.par, "RGDPpc_lag", Dict(rr => 1.0 for rr in s.r))
+    RGDPpcLag = Dict(rr => max(1.0, Float64(get(RGDPpcLag0, rr, 1.0))) for rr in s.r)
+    nstep = Float64(get(data.par, "n", 1.0))
+    delta = delta
+    chi_sf = chi_sf
+    eps_ror = eps_ror
+    grKMin = grKMin
+    grKMax = grKMax
+    grKTrend = grKTrend
+    chi_k = chi_k
+    Rn = Rn
+    chi_welf = chi_welf
+    RSG_deflator = PGDPMP
+    t0 = _env_first(s.t,"t")
+    h0 = _env_pick(s.fd, s.h, _env_first(s.fd,"h"))
+
+    # (M-1) GDP at market price.
+    @NLconstraint(m, [r=s.r], GDPMP[r] == QGDP[r,t0,t0])
+
+    # (M-1a) QGDP indicator: value of absorption, trade and transport exports,
+    # and net trade at border prices, evaluated with prices of tp and quantities of tq.
+    #
+    # Important: keep ordinary Julia conditionals outside JuMP nonlinear macros.
+    # JuMP cannot parse constructs such as `(isempty(aa0) ? ... : ...)` or
+    # `if isempty(...)` inside @NLconstraint/@NLexpression.
+    if isempty(aa0)
+        @NLconstraint(m, [r=s.r,tp=s.t,tq=s.t],
+            QGDP[r,tp,tq] ==
+                sum(PAh[r,i,fd] * XA[r,i,fd] for fd in fd_h, i in s.i)
+              + sum(PA[r,i,fd] * XA[r,i,fd] for fd in fd_nh, i in s.i)
+              + sum(sum(PWE[r,i,d] * XWs[r,i,d] for d in s.r) - sum(PWM[src,i,r] * XWd[src,i,r] for src in s.r) for i in s.i)
+        )
+    else
+        @NLconstraint(m, [r=s.r,tp=s.t,tq=s.t],
+            QGDP[r,tp,tq] ==
+                sum(PAh[r,i,fd] * XA[r,i,fd] for fd in fd_h, i in s.i)
+              + sum(PA[r,i,fd] * XA[r,i,fd] for fd in fd_nh, i in s.i)
+              + sum(PD[r,mm,aa0] * XTT[r,mm] for mm in s.i)
+              + sum(sum(PWE[r,i,d] * XWs[r,i,d] for d in s.r) - sum(PWM[src,i,r] * XWd[src,i,r] for src in s.r) for i in s.i)
+        )
+    end
+
+    # (M-2) GDP at market price deflator, Fisher price index.
+    @NLconstraint(m, [r=s.r], PGDPMP[r] == 1.0)
+
+    # (M-3) Real GDP at market price.
+    @NLconstraint(m, [r=s.r], RGDPMP[r] * PGDPMP[r] == GDPMP[r])
+
+    # (M-4) Real per-capita GDP.
+    @NLconstraint(m, [r=s.r], RGDPpc[r] == RGDPMP[r] / Pop[r])
+
+    # (M-5) Growth in real per-capita GDP.
+    @NLconstraint(m, [r=s.r], RGDPpc[r] == (1 + gy[r])^nstep * RGDPpcLag[r])
+
+    # (M-6) Capital-labor ratio in efficiency units.
+    @NLconstraint(m, [r=s.r],
+        KLRat[r] * (sum(m[:PF][r,l,a] * m[:XF][r,l,a] for l in s.l, a in s.a) + 1.0e-9) ==
+        sum(PK[r,a,v] * Kv[r,a,v] for a in s.a, v in s.v)
+    )
+
+    # (M-7) Nominal government saving.
+    @NLconstraint(m, [r=s.r],
+        Sg[r] == sum(YGOV[r,gy] for gy in s.gy) - sum(YFD[r,gov] for gov in s.gov)
+    )
+
+    # (M-8) Real government saving.
+    @NLconstraint(m, [r=s.r], RSg[r] * RSG_deflator[r] == Sg[r])
+
+    # (M-9) Balance-of-payments closure: fixed capital account case.
+    @NLconstraint(m, [r=s.r], Sf[r] == Sf[r])
+
+    # (M-10) Global foreign saving balance.
+    @NLconstraint(m, sum(Sf[r] for r in s.r) == 0)
+
+    # (M-11) Savings price normalization used in foreign-saving valuation.
+    @NLconstraint(m, PWsav == PNUM)
+
+    # (M-12) Global expected rate of return.
+    @NLconstraint(m, Rg == sum(phi[r] * Re[r] for r in s.r))
+
+    # (M-13) Regional investment weights for the global expected rate of return.
+    @NLconstraint(m, [r=s.r],
+        phi[r] * (sum(PFD[rr,inv_fd] * (XFD[rr,inv_fd] - delta * TKs[rr]) for rr in s.r) + 1.0e-9) ==
+        PFD[r,inv_fd] * (XFD[r,inv_fd] - delta * TKs[r])
+    )
+
+    # (M-14) Foreign saving fixed relative to GDP, residual-region case.
+    for r in s.r
+        if r == rres
+            # (M-14) Residual region: foreign saving is the residual under capRFix.
+            @NLconstraint(m, Sf[r] == Sf[r])
+        else
+            # (M-14) Non-residual regions: foreign saving as a share of GDP.
+            @NLconstraint(m, Sf[r] == chi_sf * GDPMP[r] / PWsav)
+        end
+    end
+
+    # (M-15) Expected end-of-period capital stock.
+    @NLconstraint(m, [r=s.r], TKe[r] == (1 - delta) * TKs[r] + XFD_inv[r,inv_fd])
+
+    # (M-16) Aggregate after-tax rate of return.
+    @NLconstraint(m, [r=s.r],
+        R[r] * (PFD[r,inv_fd] * TKs[r] + 1.0e-9) == sum(PK[r,a,v] * Kv[r,a,v] for a in s.a, v in s.v)
+    )
+
+    # (M-17) Net current rate of return.
+    @NLconstraint(m, [r=s.r], Rc[r] == R[r] / PFD[r,inv_fd] - delta)
+
+    # (M-18) Expected rate of return, GTAP-style capital account closure.
+    @NLconstraint(m, [r=s.r], Re[r] == Rc[r] * (TKe[r] / (TKs[r] + 1.0e-9))^(-eps_ror))
+
+    # (M-19) Flexible foreign saving: expected regional return equals global return adjusted for risk premium.
+    @NLconstraint(m, [r=s.r], Re[r] == Rg + Rd[r])
+
+    # (M-20) Investment-savings balance is defined in the income block as Y-20.
+    # This closure file does not duplicate Y-20.
+
+    # (M-21) Expected rate of return, USAGE-style closure.
+    @NLconstraint(m, [r=s.r], Re[r] == (1 / (1 + rbar)) * (R[r] / PFD[r,inv_fd] + (1 - delta)) - 1)
+
+    # (M-22) Deviation of expected rate of return from trend.
+    @NLconstraint(m, [r=s.r], DeltaRoR[r] == Re[r] - Rn - Rd[r] - Rg)
+
+    # (M-23) Desired growth rate of capital stock.
+    @NLconstraint(m, [r=s.r],
+        grK[r] == (grKMax * exp(chi_k * DeltaRoR[r]) + grKMin * ((grKMax - grKTrend) / (grKTrend - grKMin))) /
+                 (exp(chi_k * DeltaRoR[r]) + ((grKMax - grKTrend) / (grKTrend - grKMin)))
+    )
+
+    # (M-24) Demand for new capital/investment.
+    @NLconstraint(m, [r=s.r], XFD[r,inv_fd] == TKs[r] * (grK[r] + delta))
+
+    # (M-25) Global savings/investment balance.
+    @NLconstraint(m, sum(Sf[r] for r in s.r) == 0)
+
+    # (M-26) Model numeraire.
+    @NLconstraint(m, PNUM == 1)
+
+    # (M-27) Equivalent variation.
+    @NLconstraint(m, [r=s.r], EV[r] == YFD[r,h0] - YFD[r,h0])
+
+    # (M-28) Compensating variation.
+    @NLconstraint(m, [r=s.r], CV[r] == YFD[r,h0] - YFD[r,h0])
+
+    # (M-29) Global equivalent variation.
+    @NLconstraint(m, EVG == sum(EV[r] for r in s.r))
+
+    # (M-30) Global compensating variation.
+    @NLconstraint(m, CVG == sum(CV[r] for r in s.r))
+
+    # (M-31) Global social welfare function.
+    @NLconstraint(m, SWF == sum(chi_welf * EV[r] for r in s.r))
+
+    return m
+end
+
+function closure_residuals!(res::Dict{String,Function})
+    for k in 1:31
+        res["M-$k"] = x -> error("Residual M-$k is implemented as ENVISAGE M-$k in closure_block!.")
+    end
+    return res
+end
+
+function _closure_members(allvals::Vector{String}, selector)
+    sel = selector === nothing ? "ALL" : strip(String(selector))
+    if sel == "" || uppercase(sel) == "ALL"
+        return allvals
+    elseif sel in allvals
+        return [sel]
+    else
+        @warn "Closure selector is not in this variable's domain; skipping selector" selector=sel domain=allvals
+        return String[]
+    end
+end
+
+function _closure_rule_value(varref, raw)
+    if raw isa Number && !isnan(Float64(raw))
+        return Float64(raw)
+    end
+    sv = try JuMP.start_value(varref) catch; nothing end
+    return sv === nothing ? 0.0 : Float64(sv)
+end
+
+function _fix_closure_var!(m::JuMP.Model, varname::String, indices::Tuple, val)
+    if !haskey(JuMP.object_dictionary(m), Symbol(varname))
+        @warn "Closure variable not present in model; skipping" variable=varname indices=indices
+        return false
+    end
+    obj = m[Symbol(varname)]
+    vref = try isempty(indices) ? obj : obj[indices...] catch err
+        @warn "Closure variable index is not present in model; skipping" variable=varname indices=indices error=err
+        return false
+    end
+    JuMP.fix(vref, _closure_rule_value(vref, val); force=true)
+    return true
+end
+
+function _norm_closure_var(rule_or_var)
+    raw = rule_or_var isa AbstractDict ? String(get(rule_or_var, "variable", "")) : String(rule_or_var)
+    u = uppercase(strip(raw))
+    aliases = Dict(
+        "APS"=>"aps", "CHIAPS"=>"chiaps", "ΧS"=>"chiaps",
+        "WPREM"=>"wprem", "RS G"=>"RSg", "RSG"=>"RSg",
+        "YFD"=>"YFD", "XFD"=>"XFD", "PFD"=>"PFD",
+        "SF"=>"Sf", "SAVF"=>"Sf", "CAB"=>"Sf", "CHISF"=>"chisf", "SAVRAT"=>"chisf",
+        "PNUM"=>"PNUM", "NUMERAIRE"=>"PNUM", "GDPMP"=>"GDPMP", "PGDPMP"=>"PGDPMP",
+        "RGDPMP"=>"RGDPMP", "RGDPPC"=>"RGDPpc", "GY"=>"gy",
+        "SG"=>"Sg", "SAVG"=>"Sg", "RSG"=>"RSg", "RG"=>"Rg", "RE"=>"Re", "RC"=>"Rc",
+        "R"=>"R", "DELTAROR"=>"DeltaRoR", "GRK"=>"grK", "EV"=>"EV", "CV"=>"CV",
+        "LS"=>"Ls", "TLS"=>"Ls", "LABSUP"=>"Ls",
+        "TKS"=>"TKs", "KSUP"=>"TKs", "CAPSUP"=>"TKs",
+        "TLAND"=>"TLand", "LANDSUP"=>"TLand",
+        "CTAX"=>"τEmi", "CARBTAX"=>"τEmi", "CPRICE"=>"τEmi", "TAUEMI"=>"τEmi", "TEMI"=>"τEmi", "ΤEMI"=>"τEmi", "EMITAX"=>"τEmi",
+        "ECAP"=>"EmiCap", "EMICAP"=>"EmiCap"
+    )
+    return get(aliases, u, strip(raw))
+end
+
+function apply_excel_closures!(m::JuMP.Model, data::EnvData)
+    rules = get(data.par, "closure_rules", Any[])
+    report = Dict{String,Any}("applied"=>0, "skipped"=>0, "rules"=>rules)
+    isempty(rules) && return report
+    s = data.sets
+    for rule in rules
+        active = lowercase(strip(String(get(rule,"active","TRUE")))) in ["true","1","yes","y"]
+        active || (report["skipped"] += 1; continue)
+        status = lowercase(strip(String(get(rule,"status","fixed"))))
+        status in ["fixed","exogenous","fix"] || (report["skipped"] += 1; continue)
+        var = _norm_closure_var(rule)
+        val = get(rule,"value",NaN)
+        applied = false
+        if var in ["GDPMP","PGDPMP","RGDPMP","RGDPpc","gy","KLRat","Sg","RSg","Sf","phi","TKe","R","Rc","Re","DeltaRoR","grK","Rd","EV","CV","TKs","TLand"]
+            for r in _closure_members(s.r, get(rule,"region","ALL"))
+                applied |= _fix_closure_var!(m,var,(r,),val)
+            end
+        elseif var == "EmiCap"
+            rq = try _emission_coalitions(data) catch; s.r end
+            for q in _closure_members(Vector{String}(rq), get(rule,"region","ALL")), e in _closure_members(s.em, get(rule,"emission","ALL"))
+                applied |= _fix_closure_var!(m,var,(q,e),val)
+            end
+        elseif var == "Ls"
+            for r in _closure_members(s.r, get(rule,"region","ALL")), l in _closure_members(s.l, get(rule,"factor","ALL"))
+                applied |= _fix_closure_var!(m,var,(r,l),val)
+            end
+        elseif var == "τEmi"
+            for r in _closure_members(s.r, get(rule,"region","ALL")), e in _closure_members(s.em, get(rule,"emission","ALL"))
+                applied |= _fix_closure_var!(m,var,(r,e),val)
+            end
+        elseif var in ["YFD","XFD","PFD"]
+            for r in _closure_members(s.r, get(rule,"region","ALL")), fd in _closure_members(s.fd, get(rule,"agent","ALL"))
+                applied |= _fix_closure_var!(m,var,(r,fd),val)
+            end
+        elseif var in ["PNUM","PWsav","Rg","EVG","CVG","SWF"]
+            applied |= _fix_closure_var!(m,var,(),val)
+        else
+            @warn "Closure variable is not an ENVISAGE macro/closure variable in this package; skipping" variable=var
+        end
+        report[applied ? "applied" : "skipped"] += 1
+    end
+    return report
+end
